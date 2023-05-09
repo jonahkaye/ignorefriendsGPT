@@ -1,12 +1,5 @@
-# whatsapp-gpt
-* You'll need to run WhatsApp from a phone number using the golang library I'm using.
-* You'll run a dedicated browser in another window that's controlling ChatGPT.
-* Two terminals: `go run main.go`, and `python server.py`. I am extremely doubtful they will work for you on the first run.
-* You can also try `multichat.py` if you want to watch two ChatGPTs talk to each other.
-* This marks the end of the readme file; it is a bit sparse; thankfully the code is too! Just tuck in if you can... and I will try to add more here later.
-
-
-# This is a fork of Daniel gross's whatsapp-gpt
+# ignorefriendsGPT
+* Two terminals: `go run main.go`, and `python server.py`
 
 The goal of this is to ignore my friends and mess with them. If they sorta think they are talking to a bot but aren't sure, then I think that is really funny. 
 
@@ -16,6 +9,9 @@ I modified it to:
 - to have recent messages as history. 
 - wait on messages if they are coming in continuously using a channel
 
-
 * TODO:
 * persistent chat history loading. 
+* calendar access
+* access to other things in my life
+
+This is a fork of Daniel gross's whatsapp-gpt

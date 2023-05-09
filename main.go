@@ -3,12 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/mdp/qrterminal/v3"
@@ -24,42 +25,120 @@ import (
 type MyClient struct {
 	WAClient       *whatsmeow.Client
 	eventHandlerID uint32
+	msgChannel     chan *events.Message
+}
+
+type RecentMessage struct {
+	Sender  string
+	Name    string
+	Message string
+}
+
+var recentMessages []RecentMessage
+
+func (mycli *MyClient) processMessages() {
+	var messages []*events.Message
+
+	for {
+		select {
+		case msg := <-mycli.msgChannel:
+			messages = append(messages, msg)
+			// Wait for a 5-second delay before processing messages
+			select {
+			case msg := <-mycli.msgChannel:
+				messages = append(messages, msg)
+			case <-time.After(2 * time.Second):
+				// No more messages within the 5-second delay, process all received messages
+				for _, msg := range messages {
+					mycli.handleMessage(msg)
+				}
+				messages = nil
+			}
+		}
+	}
+}
+
+func (mycli *MyClient) handleMessage(msg *events.Message) {
+	newMessage := msg.Message
+	fmt.Println("Message from:", msg.Info.Sender.User, "->", newMessage.GetConversation())
+
+	senderName := msg.Info.PushName
+	if senderName == "" {
+		senderName = msg.Info.Sender.User
+	}
+
+	addRecentMessage(&msg.Info.Sender, senderName, msg.Message.GetConversation())
+
+	data := map[string]interface{}{
+		"message":         msg.Message.GetConversation(),
+		"message_history": getRecentMessages(25),
+		"person":          senderName,
+	}
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		fmt.Println("Error marshalling JSON:", err)
+		return
+	}
+
+	// Send a POST request with JSON data
+	req, err := http.NewRequest("POST", "http://localhost:5001/chat", bytes.NewBuffer(jsonData))
+	if err != nil {
+		fmt.Println("Error creating request:", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Println("Error making request:", err)
+		return
+	}
+
+	// Read the response
+	var jsonResponse map[string]string
+	err = json.NewDecoder(resp.Body).Decode(&jsonResponse)
+	if err != nil {
+		fmt.Println("Error decoding JSON response:", err)
+		return
+	}
+	newMsg := jsonResponse["response"]
+	fmt.Println("Response:", newMsg)
+
+	// encode out as a string
+	response := &waProto.Message{Conversation: proto.String(string(newMsg))}
+
+	userJid := types.NewJID(msg.Info.Sender.User, types.DefaultUserServer)
+	mycli.WAClient.SendMessage(context.Background(), userJid, "", response)
 }
 
 func (mycli *MyClient) register() {
 	mycli.eventHandlerID = mycli.WAClient.AddEventHandler(mycli.eventHandler)
+	mycli.msgChannel = make(chan *events.Message, 100) // Create a buffered channel for messages
+	go mycli.processMessages()                         // Start a goroutine to process messages
+}
+
+func addRecentMessage(sender *types.JID, senderName string, message string) {
+	recentMessages = append(recentMessages, RecentMessage{Sender: sender.User, Name: senderName, Message: message})
+
+	// Keep only the last 50 messages to prevent the slice from growing indefinitely
+	if len(recentMessages) > 50 {
+		recentMessages = recentMessages[1:]
+	}
+}
+
+func getRecentMessages(n int) []RecentMessage {
+	start := 0
+	if len(recentMessages) > n {
+		start = len(recentMessages) - n
+	}
+	return recentMessages[start:]
 }
 
 func (mycli *MyClient) eventHandler(evt interface{}) {
 	switch v := evt.(type) {
 	case *events.Message:
-		newMessage := v.Message
-		msg := newMessage.GetConversation()
-		fmt.Println("Message from:", v.Info.Sender.User, "->", msg)
-		if msg == "" {
-			return
-		}
-		// Make a http request to localhost:5001/chat?q= with the message, and send the response
-		// URL encode the message
-		urlEncoded := url.QueryEscape(msg)
-		url := "http://localhost:5001/chat?q=" + urlEncoded
-		// Make the request
-		resp, err := http.Get(url)
-		if err != nil {
-			fmt.Println("Error making request:", err)
-			return
-		}
-		// Read the response
-		buf := new(bytes.Buffer)
-		buf.ReadFrom(resp.Body)
-		newMsg := buf.String()
-		// encode out as a string
-		response := &waProto.Message{Conversation: proto.String(string(newMsg))}
-		fmt.Println("Response:", response)
-
-		userJid := types.NewJID(v.Info.Sender.User, types.DefaultUserServer)
-		mycli.WAClient.SendMessage(context.Background(), userJid, "", response)
-
+		mycli.msgChannel <- v // Add the message to the channel for processing
 	}
 }
 
